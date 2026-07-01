@@ -11,9 +11,9 @@ source("Spline.R")
 specs <- list(
   list(
     name = "Model 4",
-    rF0  = function(m) data.frame(X1 = runif(m, 0, 1), X2 = runif(m, 0, 1)),
+    rF0  = function(n) data.frame(X1 = runif(n, -0.2, 1.2), X2 = runif(n, -0.2, 1.2)),
     rF   = function(m) data.frame(X1 = runif(m, 0, 1), X2 = runif(m, 0, 1)),                                # Measure F of target pop.
-    lambda = function(x1, x2) 1,
+    lambda = function(x1, x2) 1.4^2 * (x1 > 0) * (x1 < 1) * (x2 > 0) * (x2 < 1),
     p0   = function(x1,x2) plogis(x1 - x2),                                                                 # Propensity score fun.
     mu0  = function(x1,x2,d)  (1 - x1^2 -x2^2) * (4 + sin(x1)*x2 + cos(x2))+ d * (x1*0.5 - x2*0.4),         # Regression fun.
     noise_sd = 1,
@@ -23,37 +23,37 @@ specs <- list(
   ),
   list(
     name = "Model 5",
-    rF0 = function(m) data.frame(X1 = runif(m, 0, 1), X2 = runif(m, 0, 1)),
+    rF0 = function(n) data.frame(X1 = runif(n, -0.2, 1.2), X2 = runif(n, -0.2, 1.2)),
     rF  = function(m) data.frame(X1 = runif(m, 0, 1), X2 = runif(m, 0, 1)),
-    lambda = function(x1, x2) 1,
+    lambda = function(x1, x2) 1.4^2 * (x1 > 0) * (x1 < 1) * (x2 > 0) * (x2 < 1),
     p0  = function(x1, x2) plogis(x1 - x2),
     mu0 = function(x1, x2, d) (1 - x1 * x2) * (3 + sin(pi * x1) * cos(pi * x2)) + d * (0.3 * x1 - 0.3 * x2),
     noise_sd = 1,
     J.x.segments.c = 1,
     J.x.segments.t = 1,
     J.x.segments   = 1
-  )
+  ),
   list(
     name = "Model 6",
-    rF0 = function(m) data.frame(X1 = runif(m, 0, 1), X2 = runif(m, 0, 1)),
-    rF  = function(m) data.frame(X1 = runif(m, 0, 1), X2 = runif(m, 0, 1)),
-    lambda = function(x1, x2) 1,
+    rF0 = function(n) data.frame(X1 = runif(n, -0.2, 1.2), X2 = runif(n, -0.2, 1.2)),
+    rF  = function(m) data.frame(X1 = rbeta(m, 1, 1), X2 = rbeta(m, 1, 1)),
+    lambda = function(x1, x2) 1.4^2 * (x1 > 0) * (x1 < 1) * (x2 > 0) * (x2 < 1),
     p0  = function(x1, x2) plogis(1.5 * x1 - 0.5 * x2),
     mu0 = function(x1, x2, d) log(1 + x1 + x2) + d * (x1 - 0.7 * x2),
     noise_sd = 1,
-    J.x.segments.c = 1,
+    J.x.segments.c = 4,
     J.x.segments.t = 1,
     J.x.segments   = 1
   ),
   list(
     name = "Model 7",
-    rF0 = function(m) data.frame(X1 = runif(m, 0, 1), X2 = runif(m, 0, 1)),
-    rF  = function(m) data.frame(X1 = runif(m, 0, 1), X2 = runif(m, 0, 1)),
-    lambda = function(x1, x2) 1,
+    rF0 = function(n) data.frame(X1 = runif(n, -0.2, 1.2), X2 = runif(n, -0.2, 1.2)),
+    rF  = function(m) data.frame(X1 = rbeta(m, 1, 1), X2 = rbeta(m, 1, 1)),
+    lambda = function(x1, x2) 1.4^2 * (x1 > 0) * (x1 < 1) * (x2 > 0) * (x2 < 1),
     p0  = function(x1, x2) plogis(-0.5 + x1 + 2 * x2),
     mu0 = function(x1, x2, d) (x1^2 + x2^2) * exp(-x1 - x2) + d * (0.5 - x2),
     noise_sd = 1,
-    J.x.segments.c = 1,
+    J.x.segments.c = 4,
     J.x.segments.t = 1,
     J.x.segments   = 1
   )
@@ -105,7 +105,7 @@ for (spec in specs) {
       Y <- df$Y
       X <- cbind(df$X1, df$X2)
       D <- df$D
-      
+
       # Control
       df.c <- subset(df, D == 0)
       X.c  <- cbind(df.c$X1, df.c$X2)
@@ -123,7 +123,7 @@ for (spec in specs) {
       X_trim <- cbind(df_trim$X1, df_trim$X2)
       Y_trim <- df_trim$Y
       D_trim <- df_trim$D
-      
+
       
       # chooseJ_result <- npiv_choose_J(Y.c,
       #               X.c,
@@ -142,54 +142,53 @@ for (spec in specs) {
       #               boot.num = 99,
       #               check.is.fullrank= FALSE,
       #               progress = TRUE)
-      # 
+
       # chooseJ_result$J.x.seg
-      # 
+
       # chooseJ_result <- npiv_choose_J(Y.t,
-      #                                 X.t,
-      #                                 X.t,
-      #                                 X.grid = NULL,
-      #                                 J.x.degree = 3,
-      #                                 K.w.degree = 4,
-      #                                 K.w.smooth = 2,
-      #                                 knots = "uniform",
-      #                                 basis = "tensor",
-      #                                 X.min = NULL,
-      #                                 X.max = NULL,
-      #                                 W.min = NULL,
-      #                                 W.max = NULL,
-      #                                 grid.num = 50,
-      #                                 boot.num = 99,
-      #                                 check.is.fullrank= FALSE,
-      #                                 progress = TRUE)
-      # 
-      #  chooseJ_result$J.x.seg
-      # 
-      #  chooseJ_result <- npiv_choose_J(D,
-      #                                  X,
-      #                                  X,
-      #                                  X.grid = NULL,
-      #                                  J.x.degree = 3,
-      #                                  K.w.degree = 4,
-      #                                  K.w.smooth = 2,
-      #                                  knots = "uniform",
-      #                                  basis = "tensor",
-      #                                  X.min = NULL,
-      #                                  X.max = NULL,
-      #                                  W.min = NULL,
-      #                                  W.max = NULL,
-      #                                  grid.num = 50,
-      #                                  boot.num = 99,
-      #                                  check.is.fullrank= FALSE,
-      #                                  progress = TRUE)
-      # 
-      #  chooseJ_result$J.x.seg
+      #               X.t,
+      #               X.t,
+      #               X.grid = NULL,
+      #               J.x.degree = 3,
+      #               K.w.degree = 4,
+      #               K.w.smooth = 2,
+      #               knots = "uniform",
+      #               basis = "tensor",
+      #               X.min = NULL,
+      #               X.max = NULL,
+      #               W.min = NULL,
+      #               W.max = NULL,
+      #               grid.num = 50,
+      #               boot.num = 99,
+      #               check.is.fullrank= FALSE,
+      #               progress = TRUE)
+
+      # chooseJ_result$J.x.seg
+
+      # chooseJ_result <- npiv_choose_J(D,
+      #               X,
+      #               X,
+      #               X.grid = NULL,
+      #               J.x.degree = 3,
+      #               K.w.degree = 4,
+      #               K.w.smooth = 2,
+      #               knots = "uniform",
+      #               basis = "tensor",
+      #               X.min = NULL,
+      #               X.max = NULL,
+      #               W.min = NULL,
+      #               W.max = NULL,
+      #               grid.num = 50,
+      #               boot.num = 99,
+      #               check.is.fullrank= FALSE,
+      #               progress = TRUE)
+
+      # chooseJ_result$J.x.seg
       
-      J.x.segments.c <- spec$J.x.segments.c              # Sieve dimension chosen by npiv_choose_J
-      J.x.segments.t <- spec$J.x.segments.t
-      J.x.segments   <- spec$J.x.segments
-      
-      
+      J.x.segments.c <- spec$J.x.segments.c                # Sieve dimension chosen by npiv_choose_J
+      J.x.segments.t <- spec$J.x.segments.t  
+      J.x.segments   <- spec$J.x.segments   
+
       # First stage
       # Estimating mu_0(x , 0) and evaluated it on X_trim
       Psi_X.c      <- prodspline(x = X.c,
@@ -200,14 +199,15 @@ for (spec in specs) {
                                  x.max = X.max)
       beta.c       <- ginv(t(Psi_X.c) %*% Psi_X.c) %*% t(Psi_X.c) %*% Y.c
       d_sieve.c    <- ncol(Psi_X.c)
-      Psi_X_trim.c <- prodspline(x = X.c,
-                                 xeval = X_trim,
-                                 K = cbind(rep(J.x.degree,NCOL(X.c)),rep(J.x.segments.c,NCOL(X.c))),
-                                 knots = knots,
-                                 basis = basis,
-                                 x.min = X.min,
-                                 x.max = X.max)
-      mu0_X_trim.c <- Psi_X_trim.c %*% beta.c
+      
+      Psi_int_X.c <- prodspline(x = X.c,
+                                xeval = int_X,
+                                K = cbind(rep(J.x.degree,NCOL(X.c)),rep(J.x.segments.c,NCOL(X.c))),
+                                knots = knots,
+                                basis = basis,
+                                x.min = X.min,
+                                x.max = X.max)
+      mu0_int_X.c <- Psi_int_X.c %*% beta.c
       
       # Estimating mu_0(x , 1) and evaluated it on X_trim
       Psi_X.t      <- prodspline(x = X.t,
@@ -218,19 +218,21 @@ for (spec in specs) {
                                  x.max = X.max)
       beta.t       <- ginv(t(Psi_X.t) %*% Psi_X.t) %*% t(Psi_X.t) %*% Y.t
       d_sieve.t    <- ncol(Psi_X.t)
-      Psi_X_trim.t <- prodspline(x = X.t,
-                                 xeval = X_trim,
-                                 K = cbind(rep(J.x.degree,NCOL(X.t)),rep(J.x.segments.t,NCOL(X.t))),
-                                 knots = knots,
-                                 basis = basis,
-                                 x.min = X.min,
-                                 x.max = X.max)
-      mu0_X_trim.t <- Psi_X_trim.t %*% beta.t
+      
+      Psi_int_X.t <- prodspline(x = X.t,
+                                xeval = int_X,
+                                K = cbind(rep(J.x.degree,NCOL(X.t)),rep(J.x.segments.t,NCOL(X.t))),
+                                knots = knots,
+                                basis = basis,
+                                x.min = X.min,
+                                x.max = X.max)
+      mu0_int_X.t <- Psi_int_X.t %*% beta.t
       
       # Second stage
-      W_hat_i     <- mean(pmax(mu0_X_trim.t- mu0_X_trim.c, 0))
+      W_hat_i     <- mean(pmax(mu0_int_X.t- mu0_int_X.c, 0))
       
       # Asymptotic variance
+      # Propensity score estimated by B-spline sieve (regress D on X over the trimmed data)
       Psi_X_trim <- prodspline(x = X_trim,
                                K = cbind(rep(J.x.degree,NCOL(X_trim)),rep(J.x.segments,NCOL(X_trim))),
                                knots = knots,
@@ -239,6 +241,8 @@ for (spec in specs) {
                                x.max = X.max)
       beta <- ginv(t(Psi_X_trim) %*% Psi_X_trim) %*% t(Psi_X_trim) %*% D_trim
       p_hat     <- as.numeric(Psi_X_trim %*% beta)
+      
+      # (GAM propensity replaced by the B-spline sieve estimate above, per the paper)
       
       idx <- which(p_hat > 0 & p_hat < 1)
       p_hat <- p_hat[idx]
@@ -268,10 +272,8 @@ for (spec in specs) {
       
       ind      <- as.numeric((mu0_X_trim2.t - mu0_X_trim2.c) >= 0)
       resid    <- ifelse(D_trim2 == 1, Y_trim2 - mu0_X_trim2.t, Y_trim2 - mu0_X_trim2.c)
-      lambda2   <- 1
-      asymp_var_hat_i  <- mean(pmax(mu0_X_trim2.t - mu0_X_trim2.c, 0)^2) - 
-                          mean(pmax(mu0_X_trim2.t - mu0_X_trim2.c, 0))^2 + 
-                          sum(ind * lambda2 * resid^2 / (p_hat * (1 - p_hat)))/length(Y_trim2)
+      lambda2   <- spec$lambda(X_trim2[,1], X_trim2[,2])^2
+      asymp_var_hat_i  <- sum(ind * lambda2 * resid^2 / (p_hat * (1 - p_hat)))/length(Y_trim2)
       se_i   <- sqrt(asymp_var_hat_i/length(Y_trim2))
       
       return(c(W_hat = W_hat_i, se = se_i))
@@ -289,7 +291,7 @@ for (spec in specs) {
       spec      = spec$name,
       n         = n,
       W_true    = W_true,
-      bias      = mean(W_hat - W_true),
+      bias      = mean(W_hat - W_true), 
       sd        = sd(W_hat),
       se        = mean(se),
       sd_se     = sd(se),
@@ -300,4 +302,4 @@ for (spec in specs) {
 
 print(final_df)
 
-save(final_df, res_mat, file = "sim_results_Thm2_2D.Rdata")
+save(final_df, res_mat, file = "sim_results_Thm1_2D.Rdata")
