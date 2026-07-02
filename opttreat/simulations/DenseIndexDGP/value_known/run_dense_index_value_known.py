@@ -39,7 +39,7 @@ PARAMETER_TYPE = "value_known"
 
 # ---------------- Simulation settings ----------------
 DGP_DIM = 50
-ITE = 500
+ITE = 2000
 NS = (1500, 3000, 6000, 12000)
 SEED = 2026
 JOBS = 4
@@ -49,7 +49,8 @@ LOO_DELTA0 = 0.05
 N_FEATURES = 200
 RFG_TYPE = "quasi_sphere"
 ACTIVATION = "sigmoid"
-SOLVER = "pinv"
+SOLVER = "ridge"          # "pinv" (Moore-Penrose OLS) or "ridge"
+ALPHA = 0.0005             # ridge penalty; used only when SOLVER == "ridge" (ignored under "pinv")
 PINV_RCOND = 1e-10
 THETA_SOBOL = 8192
 VARIANCE_SOBOL = 32768
@@ -75,7 +76,7 @@ def run(ns=NS, ite=ITE, *, jobs=JOBS, output_dir=OUTPUT_DIR):
         "share_features": True,
         "n_features": N_FEATURES,
         "random_state": SEED,
-        "alpha": 0.0,
+        "alpha": ALPHA,
         "solver": SOLVER,
         "pinv_rcond": PINV_RCOND,
     }))
@@ -93,7 +94,7 @@ def run(ns=NS, ite=ITE, *, jobs=JOBS, output_dir=OUTPUT_DIR):
         "sobol_scramble": False,
         "v_func": v_weight,
         "delta": VALUE_IOTA,
-        "alpha": 0.0,
+        "alpha": ALPHA,
         "solver": SOLVER,
         "pinv_rcond": PINV_RCOND,
     }))
