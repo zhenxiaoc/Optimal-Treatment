@@ -121,7 +121,7 @@ for (spec in specs) {
       
       ind      <- as.numeric((mu0_X.t - mu0_X.c) >= 0)
       resid    <- ifelse(df$D == 1, df$Y - mu0_X.t, df$Y - mu0_X.c)
-      lambda2  <- spec$lambda(df$X1, df$x2)^2
+      lambda2  <- spec$lambda(df$X1, df$X2)^2
       asymp_var_hat_i  <- mean(pmax(mu0_X.t - mu0_X.c, 0)^2) - mean(pmax(mu0_X.t - mu0_X.c, 0))^2 + sum(ind * lambda2 * resid^2 / (p_hat * (1 - p_hat)), na.rm = TRUE)/n
       se_i     <- sqrt(asymp_var_hat_i/n)
       
