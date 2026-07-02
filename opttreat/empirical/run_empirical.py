@@ -17,9 +17,15 @@ from the shared OptTreat components rather than bespoke helpers --
 
 Reproduction against the committed R results: the three welfare scripts match to
 floating-point precision; the value scripts match ``V_hat``, ``eps`` and ``num``
-exactly. The value standard error uses a pure-Python exact Gaussian KDE (Silverman
-bandwidth times ``SMOOTHING``) for the covariate density weight rather than R's
-binned ``ks::Hscv`` density, so it diverges from the R value SE by design.
+exactly. The value standard error uses a pure-Python exact Gaussian KDE for the
+covariate density weight rather than R's binned ``ks::Hscv`` density. The default
+bandwidth is the data-driven Silverman normal reference (``DENSITY_BW_METHOD``,
+``SMOOTHING=1``): a bandwidth study (``results/density_method_comparison.csv``,
+``density_comparison.png``, ``density_se_sensitivity.png``) showed that likelihood
+cross-validation undersmooths on these semi-discrete covariates while R's
+``Hscv``*3 / the old ``SMOOTHING=3`` oversmooths, and that the value SE is flat
+across the sensible bandwidth range, so this choice best-calibrates the density
+with a negligible SE change.
 
 Run as a module::
 
@@ -51,7 +57,19 @@ COST_PER_TREATED = 774.0           # average per-assignment service cost
 DIM = 2                            # covariates: (prevearn, edu)
 RCOND = float(np.sqrt(np.finfo(float).eps))   # MASS::ginv singular-value cutoff
 ETA = 0.01                         # value band half-width: eps = ETA * sd(h)
-SMOOTHING = 3.0                    # density oversmoothing factor (R's `smoothing`)
+# Covariate-density bandwidth for the value-functional SE weight. `bw_method`
+# picks the (full-covariance, anisotropic) gaussian_kde bandwidth; `SMOOTHING`
+# multiplies the *variance*, i.e. the bandwidth is scaled by sqrt(SMOOTHING).
+# A bandwidth exploration (see results/density_method_comparison.csv and
+# density_comparison.png) found that likelihood cross-validation *undersmooths*
+# here -- the covariates are semi-discrete (integer `edu`, a large `prevearn`=0
+# mass), so CV chases those spikes -- while the previous SMOOTHING=3 (the R
+# `Hscv`*3 convention) *oversmooths*. The data-driven Silverman normal reference
+# with no extra oversmoothing (SMOOTHING=1) sits on the value-SE plateau (SE
+# changes by <0.005) yet gives a far better-calibrated density, so it is the
+# recommended default.
+DENSITY_BW_METHOD = "silverman"
+SMOOTHING = 1.0
 N_SOBOL = 1_000_000                # Sobol points for the value-functional SE
 PS_SEGMENTS = 8                    # propensity sieve dimension (plug-in welfare SE)
 
@@ -187,7 +205,7 @@ def value_sievevar(cost: bool, trim: bool, M: int = N_SOBOL) -> dict:
     # variance weight is m(x) = v0(x) * f(x), supplied as the two factors below.
     lo, hi = support.min(axis=0), support.max(axis=0)
     area = float(np.prod(hi - lo))
-    kde = gaussian_kde(support.T, bw_method="silverman")
+    kde = gaussian_kde(support.T, bw_method=DENSITY_BW_METHOD)
     kde.set_bandwidth(kde.factor * np.sqrt(SMOOTHING))
     f_density = lambda points: kde(np.asarray(points, dtype=float).T) * area
 

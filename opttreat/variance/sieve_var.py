@@ -12,6 +12,217 @@ from opttreat.sobol import boundary_band, sobol_grid, sobol_grid_with_boundary_p
 from .base import VarianceEstimator
 
 
+def sieve_riesz_core(estimator_output: Dict[str, Any], options: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute the sieve Riesz representer and its influence contributions.
+
+    This is the shared engine behind both the sieve variance estimator
+    (:class:`SieveVariance`) and the cross-fitted sieve-debiased (DML) estimator
+    of :mod:`opttreat.estimation.dml_sieve`. Given a fitted first stage it builds
+    the stacked pathwise-derivative vector ``Bun = D_mu Theta(mu_hat)[psi-bar]``
+    (welfare uses ``1{h>=0}``; value uses the ``eps``-band surface derivative),
+    solves the arm Gram systems for the Riesz weights ``w_a = G_a^{-1} Bun_a``
+    with ``G_a = Psi_a^T Psi_a / n_a``, and returns the per-observation influence
+    ``ell_{a,i} = e_{a,i} psi_a(X_i)^T w_a / n_a``.
+
+    The sieve Riesz representer evaluated off-sample is
+    ``v*(x, d=1) = (n / n_t) psi_t(x)^T w_t`` and
+    ``v*(x, d=0) = (n / n_c) psi_c(x)^T w_c`` (the ``n / n_a`` factors convert the
+    per-arm Gram ``G_a`` to the stacked ``R = (1/n) sum psi-bar psi-bar^T`` of
+    eq. (sieve_riesz_V_hat)); the DML estimator uses these to evaluate the
+    representer on held-out folds.
+
+    Returns a dict with ``weights_t``/``weights_c``, ``Bun_t``/``Bun_c``,
+    ``feature_map_t``/``feature_map_c``, ``n_t``/``n_c``/``K_t``/``K_c``,
+    the concatenated ``influence`` and its ``var_sieve = sum ell^2``, the
+    integration grid ``X_int``/``h_int``, the resolved ``param_type`` string
+    ``pt``, and ``diagnostics``.
+    """
+    Psi_t = np.asarray(estimator_output["Psi_t"])
+    Psi_c = np.asarray(estimator_output["Psi_c"])
+    e_t = np.asarray(estimator_output["e_t"]).ravel()
+    e_c = np.asarray(estimator_output["e_c"]).ravel()
+
+    feature_map_t = estimator_output["feature_map_t"]
+    feature_map_c = estimator_output["feature_map_c"]
+    h_hat = estimator_output["h_hat"]
+
+    if not callable(feature_map_t):
+        raise TypeError("estimator_output['feature_map_t'] must be callable.")
+    if not callable(feature_map_c):
+        raise TypeError("estimator_output['feature_map_c'] must be callable.")
+    if not callable(h_hat):
+        raise TypeError("estimator_output['h_hat'] must be callable.")
+
+    n_t, K_t = Psi_t.shape
+    n_c, K_c = Psi_c.shape
+
+    alpha = estimator_output.get("alpha", options.get("alpha", None))
+    if alpha is None:
+        raise ValueError("sieve_riesz_core requires alpha in estimator_output['alpha'] or options['alpha'].")
+
+    param_type = options.get("param_type", None)
+    pt = "" if param_type is None else str(param_type).lower()
+    if "dim" not in options:
+        raise ValueError("sieve_riesz_core options must include 'dim'.")
+
+    if "unknown" in pt:
+        X_unknown = estimator_output.get("X_eval", estimator_output.get("X_all"))
+        if X_unknown is None:
+            raise ValueError(
+                "sieve_riesz_core: unknown-distribution parameters require "
+                "estimator_output['X_eval'] or ['X_all']."
+            )
+        X_int = ensure_2d_features(X_unknown, name="X_eval")
+        h_int = ensure_vector(h_hat(X_int), n=X_int.shape[0], name="h_hat(X_eval)")
+        grid_diagnostics: dict[str, Any] = {}
+    else:
+        dim = int(options["dim"])
+        n_start = int(options.get("n_sobol", 1024))
+        transform = options.get("transform", lambda u: u)
+        sobol_seed = int(options.get("sobol_seed", _SOBOL_SEED_DEFAULT))
+        scramble = bool(options.get("sobol_scramble", False))
+        if "value" in pt and bool(options.get("variance_expand_sobol", True)):
+            X_int, h_int = sobol_grid_with_boundary_points(
+                h_hat,
+                options,
+                delta=float(options.get("delta", 0.05)),
+                dim=dim,
+                n=n_start,
+                transform=transform,
+                sobol_seed=sobol_seed,
+                scramble=scramble,
+                min_band_option="variance_min_band",
+                max_sobol_option="variance_max_sobol",
+                expand_factor_option="variance_sobol_expand_factor",
+            )
+        else:
+            X_int = sobol_grid(dim, n_start, transform, sobol_seed, scramble)
+            h_int = ensure_vector(h_hat(X_int), n=X_int.shape[0], name="h_hat(X_int)")
+        grid_diagnostics = {
+            "n_sobol_requested": int(n_start),
+            "n_sobol_final": int(X_int.shape[0]),
+        }
+
+    Psi_t_int = np.asarray(feature_map_t(X_int))
+    Psi_c_int = np.asarray(feature_map_c(X_int))
+    if Psi_t_int.shape[0] != Psi_c_int.shape[0]:
+        raise ValueError("feature_map_t(X_int) and feature_map_c(X_int) must have same #rows.")
+
+    bases = np.hstack([Psi_t_int, -Psi_c_int])
+    n_int = bases.shape[0]
+
+    if "welfare" in pt:
+        good = h_int >= 0.0
+        diagnostics = {
+            "n_int": int(n_int),
+            "n_positive": int(good.sum()),
+            "positive_share": float(good.mean()),
+        }
+        diagnostics.update(grid_diagnostics)
+        if good.any():
+            Bun = bases[good, :].sum(axis=0) / n_int
+        else:
+            Bun = np.zeros(K_t + K_c, dtype=float)
+    elif "value" in pt:
+        good, eps = boundary_band(h_int, float(options.get("delta", 0.05)), options)
+        n_band = int(good.sum())
+        diagnostics = {
+            "n_int": int(n_int),
+            "eps": float(eps),
+            "n_band": n_band,
+            "band_share": float(n_band / n_int),
+        }
+        diagnostics.update(grid_diagnostics)
+
+        v_func = options.get("v_func", None)
+        f_func = options.get("f_func", None)
+
+        def m_func(Z: np.ndarray) -> np.ndarray:
+            out = np.ones(np.asarray(Z).shape[0], dtype=float)
+            if callable(v_func):
+                out = out * ensure_vector(v_func(Z), n=out.shape[0], name="v_func(X)")
+            if callable(f_func):
+                out = out * ensure_vector(f_func(Z), n=out.shape[0], name="f_func(X)")
+            return out
+
+        if good.any():
+            m_band = ensure_vector(m_func(X_int[good]), n=int(good.sum()), name="m(X_int[band])")
+            Bun = (bases[good, :] * m_band[:, None]).sum(axis=0) / n_int
+            Bun = Bun / (2.0 * eps)
+        else:
+            Bun = np.zeros(K_t + K_c, dtype=float)
+    else:
+        raise ValueError(
+            "sieve_riesz_core: options['param_type'] must indicate 'welfare' or 'value'. "
+            f"Got param_type={param_type}."
+        )
+
+    Bun_t = Bun[:K_t]
+    Bun_c = Bun[K_t:K_t + K_c]
+
+    solver = str(estimator_output.get("solver", options.get("solver", "ridge"))).lower()
+    if solver not in ("ridge", "pinv"):
+        raise ValueError("sieve_riesz_core: solver must be 'ridge' or 'pinv'.")
+    pinv_rcond = float(options.get("pinv_rcond", np.sqrt(np.finfo(float).eps)))
+    use_pinv = solver == "pinv" or float(alpha) == 0.0
+    # Optional regularization for the *representer* Gram only. The cross-fitted
+    # DML inverts the per-fold arm Gram, which can be far more ill-conditioned
+    # than the full-sample Gram (a near-empty spline cell yields an eigenvalue
+    # just above the pinv cutoff, so w = G^{-1} Bun explodes). Two knobs, both
+    # default off so SieveVariance (which sets neither) is byte-for-byte unchanged:
+    #   * riesz_rcond: forces a Moore-Penrose solve with this *relative* singular-
+    #     value cutoff regardless of the first-stage solver, so it works for the
+    #     B-spline sieve and a random-feature ridge alike, and only truncates the
+    #     ill-conditioned directions -- kept directions are unshrunk, so the
+    #     score-variance SE stays honest.
+    #   * riesz_ridge: an absolute Tikhonov floor added to the normalized Gram,
+    #     bounding ||w|| <= ||Bun|| / riesz_ridge but shrinking every direction.
+    riesz_ridge = float(options.get("riesz_ridge", 0.0))
+    riesz_rcond = options.get("riesz_rcond", None)
+
+    def _gram_inverse(Psi_arm: np.ndarray, n_arm: int, K_arm: int) -> np.ndarray:
+        gram = (Psi_arm.T @ Psi_arm) / n_arm
+        if not use_pinv and riesz_rcond is None:
+            gram = gram + (alpha / n_arm) * np.eye(K_arm)
+        if riesz_ridge > 0.0:
+            gram = gram + riesz_ridge * np.eye(K_arm)
+        if riesz_rcond is not None:
+            return np.linalg.pinv(gram, rcond=float(riesz_rcond))
+        if use_pinv:
+            return np.linalg.pinv(gram, rcond=pinv_rcond)
+        return np.linalg.solve(gram, np.eye(K_arm))
+
+    gram_t_inv = _gram_inverse(Psi_t, n_t, K_t)
+    gram_c_inv = _gram_inverse(Psi_c, n_c, K_c)
+
+    weights_t = gram_t_inv @ Bun_t
+    weights_c = gram_c_inv @ Bun_c
+
+    score_t = e_t * (Psi_t @ weights_t)
+    score_c = e_c * (Psi_c @ weights_c)
+    influence = np.concatenate([score_t / n_t, score_c / n_c])
+    var_sieve = float(np.sum(influence ** 2))
+
+    return {
+        "weights_t": weights_t,
+        "weights_c": weights_c,
+        "Bun_t": Bun_t,
+        "Bun_c": Bun_c,
+        "feature_map_t": feature_map_t,
+        "feature_map_c": feature_map_c,
+        "n_t": int(n_t),
+        "n_c": int(n_c),
+        "K_t": int(K_t),
+        "K_c": int(K_c),
+        "influence": influence,
+        "var_sieve": var_sieve,
+        "X_int": X_int,
+        "h_int": h_int,
+        "pt": pt,
+        "diagnostics": diagnostics,
+    }
+
+
 class SieveVariance(VarianceEstimator):
     """
     Sieve-based variance estimator for welfare/value parameters built on
@@ -86,193 +297,20 @@ class SieveVariance(VarianceEstimator):
             - variance_sobol_expand_factor (value only; default 2.0)
             - m (only for value)
         """
-        # -------------------------
-        # Unpack / validate inputs
-        # -------------------------
-        Psi_t = np.asarray(estimator_output["Psi_t"])
-        Psi_c = np.asarray(estimator_output["Psi_c"])
-        e_t = np.asarray(estimator_output["e_t"]).ravel()
-        e_c = np.asarray(estimator_output["e_c"]).ravel()
-
-        feature_map_t = estimator_output["feature_map_t"]
-        feature_map_c = estimator_output["feature_map_c"]
-        h_hat = estimator_output["h_hat"]
-
-        if not callable(feature_map_t):
-            raise TypeError("estimator_output['feature_map_t'] must be callable.")
-        if not callable(feature_map_c):
-            raise TypeError("estimator_output['feature_map_c'] must be callable.")
-        if not callable(h_hat):
-            raise TypeError("estimator_output['h_hat'] must be callable.")
-
-        n_t, K_t = Psi_t.shape
-        n_c, K_c = Psi_c.shape
-
-        # Ridge penalty
-        alpha = estimator_output.get("alpha", self.options.get("alpha", None))
-        if alpha is None:
-            raise ValueError("SieveVariance requires alpha in estimator_output['alpha'] or options['alpha'].")
-
-        # -------------------------
-        # Param type + integration/evaluation points
-        # -------------------------
-        param_type = self.options.get("param_type", None)
-        pt = "" if param_type is None else str(param_type).lower()
-        if "dim" not in self.options:
-            raise ValueError("SieveVariance.options must include 'dim'.")
-
-        if "unknown" in pt:
-            X_unknown = estimator_output.get("X_eval", estimator_output.get("X_all"))
-            if X_unknown is None:
-                raise ValueError(
-                    "SieveVariance: unknown-distribution parameters require "
-                    "estimator_output['X_eval'] or ['X_all']."
-                )
-            X_int = ensure_2d_features(X_unknown, name="X_eval")
-            h_int = ensure_vector(h_hat(X_int), n=X_int.shape[0], name="h_hat(X_eval)")
-            grid_diagnostics: dict[str, Any] = {}
-        else:
-            # Known distribution: build a Sobol integration grid. Value
-            # functionals expand it until the boundary band |h| < eps is
-            # populated (the same boundary_band convention the kernel uses).
-            dim = int(self.options["dim"])
-            n_start = int(self.options.get("n_sobol", 1024))
-            transform = self.options.get("transform", lambda u: u)
-            sobol_seed = int(self.options.get("sobol_seed", _SOBOL_SEED_DEFAULT))
-            scramble = bool(self.options.get("sobol_scramble", False))
-            if "value" in pt and bool(self.options.get("variance_expand_sobol", True)):
-                X_int, h_int = sobol_grid_with_boundary_points(
-                    h_hat,
-                    self.options,
-                    delta=float(self.options.get("delta", 0.05)),
-                    dim=dim,
-                    n=n_start,
-                    transform=transform,
-                    sobol_seed=sobol_seed,
-                    scramble=scramble,
-                    min_band_option="variance_min_band",
-                    max_sobol_option="variance_max_sobol",
-                    expand_factor_option="variance_sobol_expand_factor",
-                )
-            else:
-                X_int = sobol_grid(dim, n_start, transform, sobol_seed, scramble)
-                h_int = ensure_vector(h_hat(X_int), n=X_int.shape[0], name="h_hat(X_int)")
-            grid_diagnostics = {
-                "n_sobol_requested": int(n_start),
-                "n_sobol_final": int(X_int.shape[0]),
-            }
-
-        # Feature maps at integration points
-        Psi_t_int = np.asarray(feature_map_t(X_int))
-        Psi_c_int = np.asarray(feature_map_c(X_int))
-
-        if Psi_t_int.shape[0] != Psi_c_int.shape[0]:
-            raise ValueError("feature_map_t(X_int) and feature_map_c(X_int) must have same #rows.")
-
-        # bases = [Psi_t, -Psi_c]
-        bases = np.hstack([Psi_t_int, -Psi_c_int])
-        n_int = bases.shape[0]
-
-        # -------------------------
-        # Bun computation
-        # -------------------------
-        if "welfare" in pt:
-            # Welfare: 1{h >= 0}
-            good = h_int >= 0.0
-            diagnostics = {
-                "n_int": int(n_int),
-                "n_positive": int(good.sum()),
-                "positive_share": float(good.mean()),
-            }
-            diagnostics.update(grid_diagnostics)
-            if good.any():
-                Bun = bases[good, :].sum(axis=0) / n_int
-            else:
-                Bun = np.zeros(K_t + K_c, dtype=float)
-
-        elif "value" in pt:
-            # Value: (1/(2eps)) * 1{|h| < eps} * m(X)
-            good, eps = boundary_band(h_int, float(self.options.get("delta", 0.05)), self.options)
-            n_band = int(good.sum())
-            diagnostics = {
-                "n_int": int(n_int),
-                "eps": float(eps),
-                "n_band": n_band,
-                "band_share": float(n_band / n_int),
-            }
-            diagnostics.update(grid_diagnostics)
-
-            v_func = self.options.get("v_func", None)
-            f_func = self.options.get("f_func", None)
-
-            def m_func(Z: np.ndarray) -> np.ndarray:
-                out = np.ones(np.asarray(Z).shape[0], dtype=float)
-                if callable(v_func):
-                    out = out * ensure_vector(v_func(Z), n=out.shape[0], name="v_func(X)")
-                if callable(f_func):
-                    out = out * ensure_vector(f_func(Z), n=out.shape[0], name="f_func(X)")
-                return out
-
-            if good.any():
-                # The weight enters only through the in-band points (it is
-                # multiplied by 1{|h| < eps}), so evaluate m there only. This
-                # avoids paying for an expensive m (e.g. a kernel density) at the
-                # full integration grid while leaving the result unchanged.
-                m_band = ensure_vector(m_func(X_int[good]), n=int(good.sum()), name="m(X_int[band])")
-                Bun = (bases[good, :] * m_band[:, None]).sum(axis=0) / n_int
-                Bun = Bun / (2.0 * eps)
-            else:
-                Bun = np.zeros(K_t + K_c, dtype=float)
-
-        else:
-            raise ValueError(
-                "SieveVariance: options['param_type'] must indicate 'welfare' or 'value'. "
-                f"Got param_type={param_type}."
-            )
-
-        Bun_t = Bun[:K_t]
-        Bun_c = Bun[K_t:K_t + K_c]
-
-        # -------------------------
-        # Core sieve variance piece
-        # -------------------------
-        I_t = np.eye(K_t)
-        I_c = np.eye(K_c)
-
-        solver = str(estimator_output.get("solver", self.options.get("solver", "ridge"))).lower()
-        if solver not in ("ridge", "pinv"):
-            raise ValueError("SieveVariance: solver must be 'ridge' or 'pinv'.")
-        pinv_rcond = float(self.options.get("pinv_rcond", np.sqrt(np.finfo(float).eps)))
-        use_pinv = solver == "pinv" or float(alpha) == 0.0
-
-        if use_pinv:
-            gram_t_inv = np.linalg.pinv((Psi_t.T @ Psi_t) / n_t, rcond=pinv_rcond)
-            gram_c_inv = np.linalg.pinv((Psi_c.T @ Psi_c) / n_c, rcond=pinv_rcond)
-        else:
-            gram_t = (Psi_t.T @ Psi_t + alpha * I_t) / n_t
-            gram_c = (Psi_c.T @ Psi_c + alpha * I_c) / n_c
-            gram_t_inv = np.linalg.solve(gram_t, I_t)
-            gram_c_inv = np.linalg.solve(gram_c, I_c)
-
-        weights_t = gram_t_inv @ Bun_t
-        weights_c = gram_c_inv @ Bun_c
-
-        score_t = e_t * (Psi_t @ weights_t)
-        score_c = e_c * (Psi_c @ weights_c)
-        influence = np.concatenate([score_t / n_t, score_c / n_c])
-        var_sieve = float(np.sum(influence ** 2))
-
-        self.diagnostics_ = dict(diagnostics)
+        core = sieve_riesz_core(estimator_output, self.options)
+        pt = core["pt"]
+        var_sieve = core["var_sieve"]
+        self.diagnostics_ = dict(core["diagnostics"])
         var_total = var_sieve
 
-   
         # Optional: welfare unknown target-distribution extra term. Value parameters
         # under an unknown distribution take the plain sieve variance (no empirical-
         # distribution variance modification), as suggested by theory.
         if "unknown" in pt and "welfare" in pt:
+            h_int = core["h_int"]
             empirical_vals = np.maximum(h_int, 0.0)
-            n_eval = X_int.shape[0]
-            n_fit = int(n_t + n_c)
+            n_eval = core["X_int"].shape[0]
+            n_fit = int(core["n_t"] + core["n_c"])
             var_empirical = float(empirical_vals.var(ddof=0)) if n_eval > 1 else 0.0
             var_total = var_sieve * (n_fit / n_eval) + var_empirical / n_eval
 

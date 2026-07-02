@@ -19,12 +19,15 @@ CASES = [
 def test_ccg_runner_reports_plugin_and_loo_with_analytical_band(module, stem, tmp_path):
     summary, draws = module.smoke_main(output_dir=tmp_path)
 
-    # One smoke model and sample size yields a plug-in row and a LOO row.
-    assert set(summary["estimator"]) == {"plug_in", "loo"}
-    assert summary.shape[0] == 2
-    assert draws.shape[0] == 2
+    # One smoke model and sample size yields a plug-in row and a LOO row; the
+    # known-distribution welfare/value runners add a cross-fitted sieve-DML row.
+    estimators = set(summary["estimator"])
+    assert {"plug_in", "loo"} <= estimators <= {"plug_in", "loo", "dml"}
+    n_est = len(estimators)
+    assert summary.shape[0] == n_est
+    assert draws.shape[0] == n_est
 
-    # Both estimators carry SieveVar inference.
+    # Every estimator carries finite inference (the DML supplies its own SE).
     assert np.isfinite(summary[["W_true", "bias", "se", "coverage"]].to_numpy()).all()
     assert (summary["se"] >= 0.0).all()
     assert np.isfinite(draws[["W_hat", "se"]].to_numpy()).all()

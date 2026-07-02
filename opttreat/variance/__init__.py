@@ -1,11 +1,12 @@
 from .base import VarianceEstimator
-from .sieve_var import SieveVariance
+from .sieve_var import SieveVariance, sieve_riesz_core
 from .welfare_plugin_var import WelfarePlugInVariance
 from opttreat.config import VarianceConfig
 
 __all__ = [
     "VarianceEstimator",
     "SieveVariance",
+    "sieve_riesz_core",
     "WelfarePlugInVariance",
     "get_variance_estimator",
 ]

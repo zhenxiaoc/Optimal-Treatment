@@ -24,6 +24,7 @@ import pandas as pd
 from opttreat.config import EstimatorConfig, ParameterConfig, VarianceConfig
 from opttreat.data import split_treated_control
 from opttreat.estimation import get_estimator
+from opttreat.estimation.dml_sieve import dml_sieve_estimate
 from opttreat.models import CCGModel
 from opttreat.parameters import get_parameter
 from opttreat.variance import get_variance_estimator
@@ -52,6 +53,9 @@ SEED = 2025
 JOBS = 3
 LOO_DELTA0 = 0.05
 LOO_METHOD = "band"  # analytical debiasing (alternative: "central_difference")
+# Cross-fitted sieve-Riesz DML (main_260630ZX.tex Section sec:SieveDML, eq:debias_est).
+DML_FOLDS = 5
+DML_RIESZ_RCOND = 5e-3  # relative-truncation floor for the per-fold representer solve
 
 # ---------------- First-stage estimator: "sieve" or "rf_ridge" ----------------
 ESTIMATOR = "sieve"
@@ -111,14 +115,15 @@ def run(specs=SPECS, ns=NS, ite=ITE, *, jobs=JOBS, theta_sobol=THETA_SOBOL,
         }))
 
         # SieveVar standard error for the known-distribution welfare functional.
-        variance = get_variance_estimator(VarianceConfig(method="sieve_var", options={
+        variance_options = {
             "param_type": "welfare_known",
             "dim": model.dim,
             "n_sobol": int(variance_sobol),
             "transform": model.inverse_CDF,
             "sobol_scramble": False,
             "pinv_rcond": PINV_RCOND,
-        }))
+        }
+        variance = get_variance_estimator(VarianceConfig(method="sieve_var", options=variance_options))
 
         W_true = float(param.get_true_value(model))
 
@@ -132,7 +137,13 @@ def run(specs=SPECS, ns=NS, ite=ITE, *, jobs=JOBS, theta_sobol=THETA_SOBOL,
                 W_plug = float(param.plug_in(output["h_hat"]))
                 W_loo = float(param.loo(output, delta0=LOO_DELTA0))
                 se = float(np.sqrt(max(variance.fit(output), 0.0)))
-                return W_plug, W_loo, se
+                # Cross-fitted sieve-Riesz DML (its own cross-fitted score-variance SE).
+                data = {"X": df[model.feature_columns].to_numpy(),
+                        "Y": df["y"].to_numpy(), "d": df["d"].to_numpy()}
+                W_dml, se_dml = dml_sieve_estimate(
+                    data, estimator, param, variance_options,
+                    n_folds=DML_FOLDS, rng=seed_i, riesz_rcond=DML_RIESZ_RCOND)
+                return W_plug, W_loo, se, W_dml, se_dml
 
             base_seed = SEED + 100_000 * s_idx + 10_000 * n_idx
             if jobs <= 1:
@@ -146,9 +157,10 @@ def run(specs=SPECS, ns=NS, ite=ITE, *, jobs=JOBS, theta_sobol=THETA_SOBOL,
                     delayed(one_ite)(base_seed + r) for r in range(ite)
                 )
 
-            for rep, (W_plug, W_loo, se) in enumerate(results):
+            for rep, (W_plug, W_loo, se, W_dml, se_dml) in enumerate(results):
                 draw_rows.append({"spec": spec["model"], "n": n, "estimator": "plug_in", "rep": rep, "W_hat": W_plug, "W_true": W_true, "se": se})
                 draw_rows.append({"spec": spec["model"], "n": n, "estimator": "loo", "rep": rep, "W_hat": W_loo, "W_true": W_true, "se": se})
+                draw_rows.append({"spec": spec["model"], "n": n, "estimator": "dml", "rep": rep, "W_hat": W_dml, "W_true": W_true, "se": se_dml})
 
     draws = pd.DataFrame(draw_rows)
     summary_rows = []

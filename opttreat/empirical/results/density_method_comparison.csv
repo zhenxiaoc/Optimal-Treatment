@@ -1,0 +1,6 @@
+method,cv_loglik,SE_no_cost,SE_cost,num_band
+scott,-11.3026,0.08115,0.13755,274
+silverman,-11.3026,0.08115,0.13755,274
+silverman*sqrt3 (CURRENT),-11.503,0.07713,0.14366,274
+CV-optimal kde,-10.5727,0.10321,0.09597,274
+CV-optimal sklearn (whitened),-1.6157,0.10321,0.09597,274

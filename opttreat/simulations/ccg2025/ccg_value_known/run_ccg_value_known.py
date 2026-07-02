@@ -21,6 +21,7 @@ import pandas as pd
 from opttreat.config import EstimatorConfig, ParameterConfig, VarianceConfig
 from opttreat.data import split_treated_control
 from opttreat.estimation import get_estimator
+from opttreat.estimation.dml_sieve import dml_sieve_estimate
 from opttreat.models import CCGModel
 from opttreat.parameters import get_parameter
 from opttreat.variance import get_variance_estimator
@@ -45,6 +46,18 @@ SEED = 2025
 JOBS = 3
 LOO_DELTA0 = 0.05
 LOO_METHOD = "band"  # analytical debiasing (alternative: "central_difference")
+# Cross-fitted sieve-Riesz DML (main_260630ZX.tex Section sec:SieveDML, eq:debias_est).
+# The irregular value functional is the paper's key case: no global influence
+# function exists, but the sieve Riesz representer supplies a local one.
+DML_FOLDS = 5
+DML_RIESZ_RCOND = 5e-3
+# The DML refits K folds x reps, so its representer uses a smaller Sobol grid and a
+# *relative* band (delta), which is ~16x faster than the tight eps=0.005 band and
+# gives an essentially identical estimate (the representer is insensitive to the
+# exact band width). The final-precision VALUE_VARIANCE_SOBOL/VALUE_EPS still drive
+# the plug-in/LOO SieveVar SE.
+DML_VARIANCE_SOBOL = 16384
+DML_DELTA = 0.05
 
 # ---------------- First-stage estimator: "sieve" or "rf_ridge" ----------------
 ESTIMATOR = "sieve"
@@ -119,6 +132,21 @@ def run(specs=SPECS, ns=NS, ite=ITE, *, jobs=JOBS, theta_sobol=THETA_SOBOL,
             "pinv_rcond": PINV_RCOND,
         }))
 
+        # DML representer options: same construction, smaller grid + relative band.
+        dml_variance_options = {
+            "param_type": "value_known",
+            "dim": model.dim,
+            "n_sobol": int(DML_VARIANCE_SOBOL),
+            "transform": model.inverse_CDF,
+            "sobol_scramble": False,
+            "v_func": value_weight,
+            "delta": DML_DELTA,
+            "pinv_rcond": PINV_RCOND,
+            "variance_expand_sobol": True,
+            "variance_min_band": 300,
+            "variance_max_sobol": 65536,
+        }
+
         W_true = float(param.get_true_value(model))
 
         for n_idx, n in enumerate(ns):
@@ -131,7 +159,13 @@ def run(specs=SPECS, ns=NS, ite=ITE, *, jobs=JOBS, theta_sobol=THETA_SOBOL,
                 W_plug = float(param.plug_in(output["h_hat"]))
                 W_loo = float(param.loo(output, delta0=LOO_DELTA0))
                 se = float(np.sqrt(max(variance.fit(output), 0.0)))
-                return W_plug, W_loo, se
+                # Cross-fitted sieve-Riesz DML for the irregular value functional.
+                data = {"X": df[model.feature_columns].to_numpy(),
+                        "Y": df["y"].to_numpy(), "d": df["d"].to_numpy()}
+                W_dml, se_dml = dml_sieve_estimate(
+                    data, estimator, param, dml_variance_options,
+                    n_folds=DML_FOLDS, rng=seed_i, riesz_rcond=DML_RIESZ_RCOND)
+                return W_plug, W_loo, se, W_dml, se_dml
 
             base_seed = SEED + 100_000 * s_idx + 10_000 * n_idx
             if jobs <= 1:
@@ -145,9 +179,10 @@ def run(specs=SPECS, ns=NS, ite=ITE, *, jobs=JOBS, theta_sobol=THETA_SOBOL,
                     delayed(one_ite)(base_seed + r) for r in range(ite)
                 )
 
-            for rep, (W_plug, W_loo, se) in enumerate(results):
+            for rep, (W_plug, W_loo, se, W_dml, se_dml) in enumerate(results):
                 draw_rows.append({"spec": spec["model"], "n": n, "estimator": "plug_in", "rep": rep, "W_hat": W_plug, "W_true": W_true, "se": se})
                 draw_rows.append({"spec": spec["model"], "n": n, "estimator": "loo", "rep": rep, "W_hat": W_loo, "W_true": W_true, "se": se})
+                draw_rows.append({"spec": spec["model"], "n": n, "estimator": "dml", "rep": rep, "W_hat": W_dml, "W_true": W_true, "se": se_dml})
 
     draws = pd.DataFrame(draw_rows)
     summary_rows = []

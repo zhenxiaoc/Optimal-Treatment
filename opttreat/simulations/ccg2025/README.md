@@ -33,11 +33,20 @@ Sobol counts, seed, jobs) as top-level constants, and writes out the Monte Carlo
 loop explicitly. The first-stage estimator, the target parameter, and the
 SieveVar standard error are called directly from `opttreat.estimation`,
 `opttreat.parameters` and `opttreat.variance` -- there is no shared
-ccg2025-local helper. Each run reports, for every model and sample size, both the
-plug-in estimate and the LOO-debiased estimate with SieveVar inference (standard
-error and 95% coverage). The LOO second-derivative correction defaults to the
-analytical boundary-band method (`LOO_METHOD = "band"`) rather than
-finite-difference `"central_difference"`.
+ccg2025-local helper. Each run reports, for every model and sample size, the
+plug-in estimate, the LOO-debiased estimate, and (for the known-distribution
+welfare and value runners) the cross-fitted **sieve-DML** estimate. The LOO
+second-derivative correction defaults to the analytical boundary-band method
+(`LOO_METHOD = "band"`) rather than finite-difference `"central_difference"`.
+
+The `dml` row is the cross-fitted sieve-debiased estimator of
+`main_260630ZX.tex` Section `sec:SieveDML` (eq:debias_est), the paper's construction
+that unifies the regular welfare and irregular value functionals via the sieve
+Riesz representer and accommodates generic ML first stages. Its point estimate and
+its own out-of-fold score-variance SE come from
+`opttreat.estimation.dml_sieve.dml_sieve_estimate`; see
+[DML_SIEVE_ESTIMATOR.md](DML_SIEVE_ESTIMATOR.md) for the math, the per-fold
+representer regularization, and the coverage results.
 
 Each runner's `ESTIMATOR` constant selects the first stage: `"sieve"` (B-spline
 sieve, pseudo-inverse OLS = R `ginv`) or `"rf_ridge"` (random-feature ridge).
